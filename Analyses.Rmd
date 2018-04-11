@@ -1,0 +1,1524 @@
+---
+title: "R Notebook for SIP Experimental Data"
+subtitle: Created by KL Henry on 2/4/18
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+  pdf_document:
+    toc: yes
+  html_notebook:
+    theme: yeti
+---
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+
+my_reliability <- function (items, itemal = TRUE, NA.Delete = TRUE) 
+{
+    if (!all(apply(items, c(1, 2), is.numeric))) {
+        items <- apply(items, c(1, 2), as.numeric)
+        warning("Data is not numeric. Data has been coerced to be numeric.")
+    }
+    if (NA.Delete == FALSE) {
+        items[is.na(items)] <- 0
+        warning("Missing values or NA values are converted to zeros.")
+    }
+    items <- na.omit(items)
+    s <- apply(items, 2, var)
+    N <- ncol(items)
+    X <- rowSums(items)
+    alpha <- (N/(N - 1)) * (1 - sum(s)/var(X))
+    if (itemal) {
+        alphad <- array(dim = N)
+        pbis <- array(dim = N)
+        for (i in 1:N) {
+            Xd <- rowSums(items[, -i])
+            Mean <- sapply(items, mean)
+            SD <- sapply(items, sd)
+            Min <- sapply(items, min)
+            Max <- sapply(items, max)
+            Nobs <- sapply(items, length)
+            alphad[i] <- ((N - 1)/(N - 2)) * (1 - sum(s[-i])/var(Xd))
+            pbis[i] <- cor(items[, i], Xd)
+            out <- list(nItem = N, nPerson = nrow(items), alpha = alpha, 
+                scaleMean = mean(X), scaleSD = sd(X), Alpha.If.Deleted = alphad, 
+                R.With.Total = pbis, Mean = Mean, SD = SD, Min = Min, Max = Max, Nobs=Nobs)
+        }
+    }
+    else out <- list(nItem = N, nPerson = nrow(items), alpha = alpha, 
+        scaleMean = mean(X), scaleSD = sd(X))
+    class(out) <- "my_reliability"
+    out
+}
+
+print <- function(x, ...) {
+    if (is.numeric(x)) base::print(round(x, digits=3), ...) 
+    else base::print(x, ...)
+}
+
+```
+
+ 
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+
+library(tidyverse)
+library(kableExtra)
+library(psych)
+library(haven)
+library(labelled)
+library(knitr)
+library(gridExtra)
+library(reshape)
+library(pander)
+library(descriptr)
+library(qdapRegex)
+library(lavaan)
+library(GPArotation)
+library(GGally)
+library(data.table)
+
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+
+#import data
+
+d <- read_spss("ColoradoStateUniv_ShelterinPlace_Main_Weighted_Client.sav")
+
+d[d==-1] <- NA
+
+#write_csv(d, "expdata.csv")
+#d <- read_csv("expdata.csv")
+
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+
+#format data
+
+d <- d %>% 
+  mutate(RQ10_a = 6-Q10_a,
+         RQ10_b = 6-Q10_b,
+          RQ9_b = 6 - Q9_b,
+         RQ10_a = 6 - Q10_a,
+         RQ10_b = 6 - Q10_b,
+         RQ11_a = 6 - Q11_a,
+         RQ11_d = 6 - Q11_d,
+         RQ13_b = 6 - Q13_b,
+         RQ13_d = 6 - Q13_d,
+         RQ13_e = 6 - Q13_e,
+         RQ13_h = 6 - Q13_h,
+         RQ14_c = 6 - Q14_c,
+         RQ14_g = 6 - Q14_g,
+         RQ14_h = 6 - Q14_h,
+         RQ14_i = 6 - Q14_i,
+         RQ14_j = 6 - Q14_j,
+         RQ15_b = 8 - Q15_b,
+         RQ15_d = 8 - Q15_d,
+         RQ15_f = 8 - Q15_f,
+         RQ15_g = 8 - Q15_g)
+
+# funky cor items
+# look <- select(d, Q17_a_Threat, Q17_a_Actual) 
+# look[is.na(look)] <- -99
+# ds_cross_table(look$Q17_a_Threat, look$Q17_a_Actual)
+
+cor <- d %>% 
+  select(CaseID, starts_with("Q17")) %>% 
+  gather(var, value, starts_with("Q17")) %>% 
+  separate(var, into = c("var", "letter", "type"), "_") %>% 
+  spread(type, value) %>% 
+  mutate(Q17 = ifelse (is.na(Threat) & is.na(Actual), NA,
+                        ifelse (is.na(Threat) & Actual > 0, 4 + Actual, 
+                                ifelse(is.na(Actual) & Threat > 0, Threat,
+                                ifelse(Actual == 0 | Threat == 0, 0, NA))))) %>% 
+  unite("var", var, letter, sep = "_") %>% 
+  select(CaseID, var, Q17) %>% 
+  spread(var, Q17)
+
+d <- full_join(d, cor, by = "CaseID")
+  
+
+```
+
+\pagebreak
+
+# Define scales
+## Decision Rationale to Evacuate
+Does combining these items make substantive sense?
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+
+items <- d %>% 
+	select(Q6_a, Q6_b, Q6_c, Q6_d, Q6_e, Q6_f, Q6_g, Q6_h)
+
+
+variables <- c("Q6_a", "Q6_b", "Q6_c", "Q6_d", "Q6_e", "Q6_f", "Q6_g", "Q6_h")
+  
+
+ca <- my_reliability(items, itemal=TRUE, NA.Delete=TRUE)
+
+pipealpha <- paste(formatC(round(ca$alpha, digits=2), 2, format = "f"))
+
+
+temp <- cbind.data.frame(variables, ca$Nobs, ca$Mean, ca$SD, ca$Min, ca$Max, ca$R.With.Total, ca$Alpha.If.Deleted)
+colnames(temp) <- c("Item", "N", "Average", "Standard Deviation", "Minimum", "Maximum", "Correlation with total", "Cronbach's Alpha if item is deleted")
+rownames(temp) <- NULL
+
+```
+
+
+
+*Cronbach's Alpha:* (`r pipealpha`)
+
+*List of Items*
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+list <- data.frame(var_label(items)) %>% 
+  gather("Variable", "label") %>% 
+  mutate(Item = rm_between(label, "[", "]", extract=TRUE)) %>% 
+  select(-label)
+  
+ 
+kable(list, "html", align = 'l') %>% 
+   kable_styling(bootstrap_options = c("striped", "hover", "responsive"), full_width = T)
+
+
+```
+
+*Item Analysis*
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+#set.alignment('center', row.names = 'center')
+#pander(temp)
+
+kable(temp, "html", align = 'c') %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "responsive"), full_width = F)
+
+
+rm(ca)
+rm(temp)
+rm(pipealpha)
+rm(pct)
+
+```
+
+```{r, fig.height=10, fig.width=10, echo = FALSE}
+
+fwrite(items,"some.name.temp")
+items <- fread("some.name.temp",colClasses="numeric")
+
+scat <- items %>% 
+  na.omit()
+
+
+scatterplot <- ggpairs(scat, columns = variables, 
+upper = list(continuous = wrap("cor")),
+title = "Scatter plot of items")
+print(scatterplot, progress=FALSE) 
+
+rm(scat)
+
+```
+
+
+
+
+*Confirmatory Factor Analysis*
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+factor <- 'lv =~ Q6_a + Q6_b + Q6_c + Q6_d + Q6_e + Q6_f + Q6_g + Q6_h'
+fit <- cfa(factor, data = items)
+summary(fit, fit.measures = TRUE)
+
+rm(factor)
+rm(fit)
+```
+
+
+*Exploratory Factor Analysis: Scree plot*
+```{r, echo = FALSE, warning = FALSE}
+set.seed(123)
+parallel = fa.parallel(items,
+ fm = 'ml',
+ fa = 'fa',
+ n.iter = 50,
+ main = "Scree plot of scale",
+ SMC = TRUE,
+ quant = .95)
+
+```
+
+*Exploratory Factor Analysis: Recommended Solution*
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+fa(items, fm = 'ml', nfactors = parallel$nfact)
+```
+
+*Exploratory Factor Analysis: Solutions where Eigen Values are >1*
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+fa(items,  fm = 'ml', nfactors = sum(parallel$fa.values > 1))
+
+rm(parallel)
+```
+
+
+
+##Decision Rational to Shelter
+Does combining these items make substantive sense?
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+items <- d %>% 
+	select(Q4_a, Q4_b, Q4_c, Q4_d, Q4_e, Q4_f, Q4_g, Q4_h)
+
+variables <- c("Q4_a", "Q4_b","Q4_c", "Q4_d", "Q4_e", "Q4_f", "Q4_g", "Q4_h")
+  
+
+ca <- my_reliability(items, itemal=TRUE, NA.Delete=TRUE)
+
+pipealpha <- paste(formatC(round(ca$alpha, digits=2), 2, format = "f"))
+
+temp <- cbind.data.frame(variables, ca$Nobs, ca$Mean, ca$SD, ca$Min, ca$Max, ca$R.With.Total, ca$Alpha.If.Deleted)
+colnames(temp) <- c("Item", "N", "Average", "Standard Deviation", "Minimum", "Maximum", "Correlation with total", "Cronbach's Alpha if item is deleted")
+rownames(temp) <- NULL
+
+
+```
+
+*Cronbach's Alpha:* (`r pipealpha`)
+
+*List of Items*
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+list <- data.frame(var_label(items)) %>% 
+  gather("Variable", "label") %>% 
+  mutate(Item = rm_between(label, "[", "]", extract=TRUE)) %>% 
+  select(-label)
+  
+ 
+kable(list, "html", align = 'l') %>% 
+   kable_styling(bootstrap_options = c("striped", "hover", "responsive"), full_width = T)
+
+```
+
+
+*Item Analysis*
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#set.alignment('left', row.names = 'right')
+#pander(temp)
+
+kable(temp, "html", align = 'c') %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "responsive"), full_width = F)
+
+rm(ca)
+rm(temp)
+rm(pipealpha)
+rm(pct)
+
+```
+
+```{r, fig.height=10, fig.width=10, echo = FALSE}
+
+fwrite(items,"some.name.temp")
+items <- fread("some.name.temp",colClasses="numeric")
+
+scat <- items %>% 
+  na.omit()
+
+
+scatterplot <- ggpairs(scat, columns = variables, 
+upper = list(continuous = wrap("cor")),
+title = "Scatter plot of items")
+print(scatterplot, progress=FALSE) 
+
+rm(scat)
+
+```
+
+*Confirmatory Factor Analysis*
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+factor <- 'lv =~ Q4_a + Q4_b + Q4_c + Q4_d + Q4_e + Q4_f + Q4_g + Q4_h'
+fit <- cfa(factor, data = items)
+summary(fit, fit.measures = TRUE)
+
+rm(factor)
+rm(fit)
+```
+
+*Exploratory Factor Analysis: Scree plot*
+```{r, echo = FALSE, warning = FALSE}
+set.seed(123)
+parallel = fa.parallel(items,
+ fm = 'ml',
+ fa = 'fa',
+ n.iter = 50,
+ main = "Scree plot of scale",
+ SMC = TRUE,
+ quant = .95)
+
+```
+
+*Exploratory Factor Analysis: Recommended Solution*
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+fa(items, fm = 'ml', nfactors = parallel$nfact)
+```
+
+*Exploratory Factor Analysis: Solutions where Eigen Values are >1*
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+fa(items,  fm = 'ml', nfactors = sum(parallel$fa.values > 1))
+
+rm(parallel)
+```
+
+## Attitude Toward Act
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+items <- d %>%
+  select(Q9_d, Q9_f)
+
+
+variables <- c("Q9_d", "Q9_f")
+
+ca <- my_reliability(items, itemal=TRUE, NA.Delete=TRUE)
+
+pipealpha <- paste(formatC(round(ca$alpha, digits=2), 2, format = "f"))
+
+temp <- cbind.data.frame(variables, ca$Nobs, ca$Mean, ca$SD, ca$Min, ca$Max, ca$R.With.Total)
+colnames(temp) <- c("Item", "N", "Average", "Standard Deviation", "Minimum", "Maximum", "Correlation with total")
+rownames(temp) <- NULL
+
+
+```
+
+*Cronbach's Alpha: NA (2-item scale)*
+
+*List of Items*
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+list <- data.frame(var_label(items)) %>% 
+  gather("Variable", "label") %>% 
+  mutate(Item = rm_between(label, "[", "]", extract=TRUE)) %>% 
+  select(-label)
+  
+ 
+kable(list, "html", align = 'l') %>% 
+   kable_styling(bootstrap_options = c("striped", "hover", "responsive"), full_width = T)
+
+```
+
+*Item Analysis*
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#set.alignment('left', row.names = 'right')
+#pander(temp)
+
+kable(temp, "html", align = 'c') %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "responsive"), full_width = F) 
+
+rm(ca)
+rm(temp)
+rm(pipealpha)
+rm(pct)
+
+```
+
+```{r, fig.height=10, fig.width=10, echo = FALSE}
+
+fwrite(items,"some.name.temp")
+items <- fread("some.name.temp",colClasses="numeric")
+
+scat <- items %>% 
+  na.omit()
+
+
+scatterplot <- ggpairs(scat, columns = variables, 
+upper = list(continuous = wrap("cor")),
+title = "Scatter plot of items")
+print(scatterplot, progress=FALSE) 
+
+rm(scat)
+
+```
+
+*Factor Analysis: NA (2-item scale)*
+
+## Social Normative Pressure
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+items <- d %>%
+  select(Q9_a, Q9_c)
+  
+
+variables <- c("Q9_a", "Q9_c")
+  
+
+ca <- my_reliability(items, itemal=TRUE, NA.Delete=TRUE)
+
+pipealpha <- paste(formatC(round(ca$alpha, digits=2), 2, format = "f"))
+
+temp <- cbind.data.frame(variables, ca$Nobs, ca$Mean, ca$SD, ca$Min, ca$Max, ca$R.With.Total)
+colnames(temp) <- c("Item", "N", "Average", "Standard Deviation", "Minimum", "Maximum", "Correlation with total")
+rownames(temp) <- NULL
+
+
+```
+
+*Cronbach's Alpha: NA (2-item scale)*
+
+*List of Items*
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+list <- data.frame(var_label(items)) %>% 
+  gather("Variable", "label") %>% 
+  mutate(Item = rm_between(label, "[", "]", extract=TRUE)) %>% 
+  select(-label)
+  
+ 
+kable(list, "html", align = 'l') %>% 
+   kable_styling(bootstrap_options = c("striped", "hover", "responsive"), full_width = T)
+
+```
+
+*Item Analysis*
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#set.alignment('left', row.names = 'right')
+#pander(temp)
+
+
+kable(temp, "html", align = 'c') %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "responsive"), full_width = F) 
+
+
+rm(ca)
+rm(temp)
+rm(pipealpha)
+rm(pct)
+
+```
+
+```{r, fig.height=10, fig.width=10, echo = FALSE}
+
+fwrite(items,"some.name.temp")
+items <- fread("some.name.temp",colClasses="numeric")
+
+scat <- items %>% 
+  na.omit()
+
+
+scatterplot <- ggpairs(scat, columns = variables, 
+upper = list(continuous = wrap("cor")),
+title = "Scatter plot of items")
+print(scatterplot, progress=FALSE) 
+
+rm(scat)
+
+```
+
+*Factor Analysis: NA (2-item scale)*
+
+## Self-efficacy
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+
+items <- d %>%
+  select(RQ9_b, Q9_e)
+
+variables <- c("RQ9_b", "Q9_e")
+  
+
+ca <- my_reliability(items, itemal=TRUE, NA.Delete=TRUE)
+
+pipealpha <- paste(formatC(round(ca$alpha, digits=2), 2, format = "f"))
+
+temp <- cbind.data.frame(variables, ca$Nobs, ca$Mean, ca$SD, ca$Min, ca$Max, ca$R.With.Total)
+colnames(temp) <- c("Item", "N", "Average", "Standard Deviation", "Minimum", "Maximum", "Correlation with total")
+rownames(temp) <- NULL
+
+#Q9_b: 1,5
+
+
+```
+
+*Cronbach's Alpha: NA (2-item scale)*
+
+*List of Items*
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+list <- data.frame(var_label(items)) %>% 
+  gather("Variable", "label") %>% 
+  mutate(Item = rm_between(label, "[", "]", extract=TRUE)) %>% 
+  select(-label)
+  
+ 
+kable(list, "html", align = 'l') %>% 
+   kable_styling(bootstrap_options = c("striped", "hover", "responsive"), full_width = T)
+
+```
+
+*Item Analysis*
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#set.alignment('left', row.names = 'right')
+#pander(temp)
+
+
+kable(temp, "html", align = 'c') %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "responsive"), full_width = F) 
+
+
+rm(ca)
+rm(temp)
+rm(pipealpha)
+rm(pct)
+```
+
+```{r, fig.height=10, fig.width=10, echo = FALSE}
+
+fwrite(items,"some.name.temp")
+items <- fread("some.name.temp",colClasses="numeric")
+
+scat <- items %>% 
+  na.omit()
+
+
+scatterplot <- ggpairs(scat, columns = variables, 
+upper = list(continuous = wrap("cor")),
+title = "Scatter plot of items")
+print(scatterplot, progress=FALSE) 
+
+rm(scat)
+
+```
+
+*Factor Analysis: NA (2-item scale)*
+
+## Cognitive Risk Perception
+Summary based on factor solution
+control
+RQ11_a	…how much can you control being physically harmed by a hazardous release such as this?
+RQ11_d	…how much could you control damage to your personal property from hazardous releases such as this?
+
+seriousness of situation
+Q10_e	…how unpredictable do you think hazardous releases are?
+Q11_b	…how much is the threat from hazardous releases increasing? (could go with 12 set)
+Q11_c	…how much of a financial threat do hazardous releases pose?
+
+feeling helpless
+Q10_c	…how hard do you think it would be to prepare for hazardous releases?
+Q10_d	…how difficult would it be it to understand hazardous release information?
+
+prior knowledge/experience
+RQ10_a	…how knowledgeable are you about hazardous releases?
+RQ10_b	…how experienced are you with hazardous releases?
+
+serious hazard
+Q12_a	…damages from hazardous releases extend to future generations?
+Q12_b	…hazardous releases may cause catastrophic destruction?
+Q12_c	…hazardous releases may cause widespread death?
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+items <- d %>% 
+	select(RQ10_a, RQ10_b, Q10_c, Q10_d, Q10_e, RQ11_a, Q11_b, Q11_c, RQ11_d, Q12_a, Q12_b, Q12_c)
+
+variables <- c("RQ10_a", "RQ10_b", "Q10_c", "Q10_d", "Q10_e", "RQ11_a", "Q11_b", "Q11_c", "RQ11_d", "Q12_a", "Q12_b", "Q12_c")
+  
+
+ca <- my_reliability(items, itemal=TRUE, NA.Delete=TRUE)
+
+pipealpha <- paste(formatC(round(ca$alpha, digits=2), 2, format = "f"))
+
+temp <- cbind.data.frame(variables, ca$Nobs, ca$Mean, ca$SD, ca$Min, ca$Max, ca$R.With.Total, ca$Alpha.If.Deleted)
+colnames(temp) <- c("Item", "N", "Average", "Standard Deviation", "Minimum", "Maximum", "Correlation with total", "Cronbach's Alpha if item is deleted")
+rownames(temp) <- NULL
+
+
+```
+
+*Cronbach's Alpha:* (`r pipealpha`)
+
+*List of Items*
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+list <- data.frame(var_label(items)) %>% 
+  gather("Variable", "label") %>% 
+  mutate(Item = rm_between(label, "[", "]", extract=TRUE)) %>% 
+  select(-label)
+  
+ 
+kable(list, "html", align = 'l') %>% 
+   kable_styling(bootstrap_options = c("striped", "hover", "responsive"), full_width = T)
+
+```
+
+*Item Analysis*
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#set.alignment('left', row.names = 'right')
+#pander(temp)
+
+
+kable(temp, "html", align = 'c') %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "responsive"), full_width = F)
+
+rm(ca)
+rm(temp)
+rm(pipealpha)
+rm(pct)
+
+#Q10_a: 1, 5 
+#Q10_b: 1, 5
+#Q11_a: 1, 5
+#Q11_d: 1, 5
+
+```
+
+```{r, fig.height=10, fig.width=10, echo = FALSE}
+
+fwrite(items,"some.name.temp")
+items <- fread("some.name.temp",colClasses="numeric")
+
+scat <- items %>% 
+  na.omit()
+
+
+scatterplot <- ggpairs(scat, columns = variables, 
+upper = list(continuous = wrap("cor")),
+title = "Scatter plot of items")
+print(scatterplot, progress=FALSE) 
+
+rm(scat)
+
+```
+
+*Confirmatory Factor Analysis*
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+factor <- 'lv =~ RQ10_a + RQ10_b + Q10_c + Q10_d + Q10_e + RQ11_a + Q11_b + Q11_c + RQ11_d + Q12_a + Q12_b + Q12_c'
+fit <- cfa(factor, data = items)
+summary(fit, fit.measures = TRUE)
+
+rm(factor)
+rm(fit)
+```
+
+*Exploratory Factor Analysis: Scree plot*
+```{r, echo = FALSE, warning = FALSE}
+set.seed(123)
+parallel = fa.parallel(items,
+ fm = 'ml',
+ fa = 'fa',
+ n.iter = 50,
+ main = "Scree plot of scale",
+ SMC = TRUE,
+ quant = .95)
+
+```
+
+*Exploratory Factor Analysis: Recommended Solution*
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+fa(items, fm = 'ml', nfactors = parallel$nfact)
+```
+
+*Exploratory Factor Analysis: Solutions where Eigen Values are >1*
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+fa(items,  fm = 'ml', nfactors = sum(parallel$fa.values > 1))
+
+rm(parallel)
+```
+
+
+## Affective Risk Perception
+Summary based on factor solution
+sad
+Q13_c	Depressed
+
+excited
+RQ13_b	Capable
+RQ13_d	Courageous
+RQ13_e	Exhilarated
+RQ13_h	Alive
+
+worry
+Q13_a	Dread
+Q13_f	Fearful
+Q13_g	Worried
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+
+items <- d %>%
+  select(Q13_a, RQ13_b, Q13_c, RQ13_d, RQ13_e, Q13_f, Q13_g, RQ13_h)
+
+variables <- c("Q13_a", "RQ13_b", "Q13_c", "RQ13_d", "RQ13_e", "Q13_f", "Q13_g", "RQ13_h")
+  
+
+ca <- my_reliability(items, itemal=TRUE, NA.Delete=TRUE)
+
+pipealpha <- paste(formatC(round(ca$alpha, digits=2), 2, format = "f"))
+
+temp <- cbind.data.frame(variables, ca$Nobs, ca$Mean, ca$SD, ca$Min, ca$Max, ca$R.With.Total, ca$Alpha.If.Deleted)
+colnames(temp) <- c("Item", "N", "Average", "Standard Deviation", "Minimum", "Maximum", "Correlation with total", "Cronbach's Alpha if item is deleted")
+rownames(temp) <- NULL
+
+#Q13_b: 1, 5
+#Q13_d: 1, 5
+#Q13_e: 1, 5
+#Q13_h: 1, 5
+
+
+```
+
+*Cronbach's Alpha:* (`r pipealpha`)
+
+*List of Items*
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+list <- data.frame(var_label(items)) %>% 
+  gather("Variable", "label") %>% 
+  mutate(Item = rm_between(label, "[", "]", extract=TRUE)) %>% 
+  select(-label)
+  
+ 
+kable(list, "html", align = 'l') %>% 
+   kable_styling(bootstrap_options = c("striped", "hover", "responsive"), full_width = T)
+
+```
+
+*Item Analysis*
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#set.alignment('left', row.names = 'right')
+#pander(temp)
+
+
+kable(temp, "html", align = 'c') %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "responsive"), full_width = F) 
+
+
+rm(ca)
+rm(temp)
+rm(pipealpha)
+rm(pct)
+
+
+```
+
+```{r, fig.height=10, fig.width=10, echo = FALSE}
+
+fwrite(items,"some.name.temp")
+items <- fread("some.name.temp",colClasses="numeric")
+
+scat <- items %>% 
+  na.omit()
+
+
+scatterplot <- ggpairs(scat, columns = variables, 
+upper = list(continuous = wrap("cor")),
+title = "Scatter plot of items")
+print(scatterplot, progress=FALSE) 
+
+rm(scat)
+
+```
+
+*Confirmatory Factor Analysis*
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+factor <- 'lv =~ Q13_a + RQ13_b + Q13_c + RQ13_d + RQ13_e + Q13_f + Q13_g + RQ13_h'
+fit <- cfa(factor, data = items)
+summary(fit, fit.measures = TRUE)
+
+rm(factor)
+rm(fit)
+```
+
+
+*Exploratory Factor Analysis: Scree plot*
+```{r, echo = FALSE, warning = FALSE}
+set.seed(123)
+parallel = fa.parallel(items,
+ fm = 'ml',
+ fa = 'fa',
+ n.iter = 50,
+ main = "Scree plot of scale",
+ SMC = TRUE,
+ quant = .95)
+
+```
+
+*Exploratory Factor Analysis: Recommended Solution*
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+fa(items, fm = 'ml', nfactors = parallel$nfact)
+```
+
+*Exploratory Factor Analysis: Solutions where Eigen Values are >1*
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+fa(items,  fm = 'ml', nfactors = sum(parallel$fa.values > 1))
+
+rm(parallel)
+```
+
+## Locus of Control
+Summary based on factor solution
+follower
+RQ14_h	When part of a group I prefer to let other people make all the decisions.
+RQ14_i	I prefer situations where I can depend on someone else’s ability rather than my own.
+
+need positive affirmation
+RQ14_j	Having someone important tell me I did a good job is more important to me than feeling I’ve done a good job.
+RQ14_c	I need someone else to praise my work before I am satisfied with what I’ve done.
+
+take charge
+Q14_a	I like jobs where I can make decisions and be responsible for my own work.
+Q14_b	I enjoy being in a position of leadership.
+Q14_d	I am sure enough of my opinions to try to influence others.
+Q14_e	When something is going to affect me I try to learn as much as I can about it.
+Q14_f	I stick to my opinions when someone disagrees with me.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+items <- d %>%
+  select(Q14_a, Q14_b, RQ14_c, Q14_d, Q14_e, Q14_f, RQ14_g, RQ14_h, RQ14_i, RQ14_j)
+
+variables <- c("Q14_a", "Q14_b", "RQ14_c", "Q14_d", "Q14_e", "Q14_f", "RQ14_g", "RQ14_h", "RQ14_i", "RQ14_j") 
+  
+
+ca <- my_reliability(items, itemal=TRUE, NA.Delete=TRUE)
+
+pipealpha <- paste(formatC(round(ca$alpha, digits=2), 2, format = "f"))
+
+temp <- cbind.data.frame(variables, ca$Nobs, ca$Mean, ca$SD, ca$Min, ca$Max, ca$R.With.Total, ca$Alpha.If.Deleted)
+colnames(temp) <- c("Item", "N", "Average", "Standard Deviation", "Minimum", "Maximum", "Correlation with total", "Cronbach's Alpha if item is deleted")
+rownames(temp) <- NULL
+
+
+#Q14_c: 1, 5
+#Q14_g: 1, 5
+#Q14_h: 1, 5
+#Q14_i: 1, 5
+#Q14_j: 1, 5
+
+
+```
+
+*Cronbach's Alpha:* (`r pipealpha`)
+
+*List of Items*
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+list <- data.frame(var_label(items)) %>% 
+  gather("Variable", "label") %>% 
+  mutate(Item = rm_between(label, "[", "]", extract=TRUE)) %>% 
+  select(-label)
+  
+ 
+kable(list, "html", align = 'l') %>% 
+   kable_styling(bootstrap_options = c("striped", "hover", "responsive"), full_width = T)
+
+```
+
+
+*Item Analysis*
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#set.alignment('left', row.names = 'right')
+#pander(temp)
+
+
+kable(temp, "html", align = 'c') %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "responsive"), full_width = F)
+
+rm(ca)
+rm(temp)
+rm(pipealpha)
+rm(pct)
+
+
+
+```
+
+```{r, fig.height=10, fig.width=10, echo = FALSE}
+
+fwrite(items,"some.name.temp")
+items <- fread("some.name.temp",colClasses="numeric")
+
+scat <- items %>% 
+  na.omit()
+
+
+scatterplot <- ggpairs(scat, columns = variables, 
+upper = list(continuous = wrap("cor")),
+title = "Scatter plot of items")
+print(scatterplot, progress=FALSE) 
+
+rm(scat)
+
+```
+
+*Confirmatory Factor Analysis*
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+factor <- 'lv =~ Q14_a + Q14_b + RQ14_c + Q14_d + Q14_e + Q14_f + RQ14_g + RQ14_h + RQ14_i + RQ14_j'
+fit <- cfa(factor, data = items)
+summary(fit, fit.measures = TRUE)
+
+rm(factor)
+rm(fit)
+```
+
+
+*Exploratory Factor Analysis: Scree plot*
+```{r, echo = FALSE, warning = FALSE}
+set.seed(123)
+parallel = fa.parallel(items,
+ fm = 'ml',
+ fa = 'fa',
+ n.iter = 50,
+ main = "Scree plot of scale",
+ SMC = TRUE,
+ quant = .95)
+
+```
+
+*Exploratory Factor Analysis: Recommended Solution*
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+fa(items, fm = 'ml', nfactors = parallel$nfact)
+```
+
+*Exploratory Factor Analysis: Solutions where Eigen Values are >1*
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+fa(items,  fm = 'ml', nfactors = sum(parallel$fa.values > 1))
+
+rm(parallel)
+```
+
+## Conformity
+Summary based on factor solution - just seems to break down by reversed items
+positive fist
+Q15_c	Agreeing|Disagreeing
+Q15_e	Cooperative|Uncooperative
+Q15_a	Compliant|Defiant
+
+negative first
+RQ15_b	Resistant|Submissive
+RQ15_d	Inflexible|Flexible
+RQ15_f	Opposing|Accepting
+RQ15_g	Differing|Consenting
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+items <- d %>%
+  select(Q15_a, RQ15_b, Q15_c, RQ15_d, Q15_e, RQ15_f, RQ15_g)
+
+variables <- c("Q15_a", "RQ15_b", "Q15_c", "RQ15_d", "Q15_e", "RQ15_f", "RQ15_g") 
+  
+
+ca <- my_reliability(items, itemal=TRUE, NA.Delete=TRUE)
+
+pipealpha <- paste(formatC(round(ca$alpha, digits=2), 2, format = "f"))
+
+temp <- cbind.data.frame(variables, ca$Nobs, ca$Mean, ca$SD, ca$Min, ca$Max, ca$R.With.Total, ca$Alpha.If.Deleted)
+colnames(temp) <- c("Item", "N", "Average", "Standard Deviation", "Minimum", "Maximum", "Correlation with total", "Cronbach's Alpha if item is deleted")
+rownames(temp) <- NULL
+
+
+```
+
+*Cronbach's Alpha:* (`r pipealpha`)
+
+*List of Items*
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+list <- data.frame(var_label(items)) %>% 
+  gather("Variable", "label") %>% 
+  mutate(Item = rm_between(label, "[", "]", extract=TRUE)) %>% 
+  select(-label)
+  
+ 
+kable(list, "html", align = 'l') %>% 
+   kable_styling(bootstrap_options = c("striped", "hover", "responsive"), full_width = T)
+
+```
+
+*Item Analysis*
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#set.alignment('left', row.names = 'right')
+#pander(temp)
+
+
+
+kable(temp, "html", align = 'c') %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "responsive"), full_width = F) 
+
+
+rm(ca)
+rm(temp)
+rm(pipealpha)
+rm(pct)
+
+
+#Q15_b: 1, 7
+#Q15_d: 1, 7
+#Q15_f: 1, 7
+#Q15_g: 1, 7
+```
+
+```{r, fig.height=10, fig.width=10, echo = FALSE}
+
+fwrite(items,"some.name.temp")
+items <- fread("some.name.temp",colClasses="numeric")
+
+scat <- items %>% 
+  na.omit()
+
+
+scatterplot <- ggpairs(scat, columns = variables, 
+upper = list(continuous = wrap("cor")),
+title = "Scatter plot of items")
+print(scatterplot, progress=FALSE) 
+
+rm(scat)
+
+```
+
+*Confirmatory Factor Analysis*
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+factor <- 'lv =~ Q15_a + RQ15_b + Q15_c + RQ15_d + Q15_e + RQ15_f + RQ15_g'
+fit <- cfa(factor, data = items)
+summary(fit, fit.measures = TRUE)
+
+rm(factor)
+rm(fit)
+```
+
+
+*Exploratory Factor Analysis: Scree plot*
+```{r, echo = FALSE, warning = FALSE}
+set.seed(123)
+parallel = fa.parallel(items,
+ fm = 'ml',
+ fa = 'fa',
+ n.iter = 50,
+ main = "Scree plot of scale",
+ SMC = TRUE,
+ quant = .95)
+
+```
+
+*Exploratory Factor Analysis: Recommended Solution*
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+fa(items, fm = 'ml', nfactors = parallel$nfact)
+```
+
+*Exploratory Factor Analysis: Solutions where Eigen Values are >1*
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+fa(items,  fm = 'ml', nfactors = sum(parallel$fa.values > 1))
+
+rm(parallel)
+```
+
+## Reactance
+true reactance
+Q16_a	Rules trigger a sense of resistance in me.
+Q16_j	When something is not allowed, I usually think, ‘That is exactly what I am going to do’.
+Q16_b	I find contradicting others stimulating.
+Q16_g	When forced to do something, I feel like doing the opposite.
+
+doesn't welcome other's input
+Q16_c	I consider advice from others to be a bother.
+Q16_d	I resist the attempts of others to influence me.
+Q16_h	It makes me angry when another person is held up as a role model for me to follow.
+Q16_k	Advice and recommendations usually make me do just the opposite.
+
+emotional when controlled
+Q16_e	I become angry when my freedom of choice is restricted.
+Q16_i	I become frustrated when I am unable to make free and independent decisions.
+? Q16_f	It irritates me when someone says things which are obvious.
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+items <- d %>%
+  select(Q16_a, Q16_b, Q16_c, Q16_d, Q16_e, Q16_f, Q16_g, Q16_h, Q16_i, Q16_j, Q16_k)
+
+variables <- c("Q16_a", "Q16_b", "Q16_c", "Q16_d", "Q16_e", "Q16_f", "Q16_g", "Q16_h", "Q16_i", "Q16_j", "Q16_k") 
+  
+
+ca <- my_reliability(items, itemal=TRUE, NA.Delete=TRUE)
+
+pipealpha <- paste(formatC(round(ca$alpha, digits=2), 2, format = "f"))
+
+temp <- cbind.data.frame(variables, ca$Nobs, ca$Mean, ca$SD, ca$Min, ca$Max, ca$R.With.Total, ca$Alpha.If.Deleted)
+colnames(temp) <- c("Item", "N", "Average", "Standard Deviation", "Minimum", "Maximum", "Correlation with total", "Cronbach's Alpha if item is deleted")
+rownames(temp) <- NULL
+
+
+```
+
+*Cronbach's Alpha:* (`r pipealpha`)
+
+*List of Items*
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+list <- data.frame(var_label(items)) %>% 
+  gather("Variable", "label") %>% 
+  mutate(Item = rm_between(label, "[", "]", extract=TRUE)) %>% 
+  select(-label)
+  
+ 
+kable(list, "html", align = 'l') %>% 
+   kable_styling(bootstrap_options = c("striped", "hover", "responsive"), full_width = T)
+
+```
+
+*Item Analysis*
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#set.alignment('left', row.names = 'right')
+#pander(temp)
+
+kable(temp, "html", align = 'c') %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "responsive"), full_width = F) 
+
+rm(ca)
+rm(temp)
+rm(pipealpha)
+rm(pct)
+
+```
+
+```{r, fig.height=10, fig.width=10, echo = FALSE}
+
+fwrite(items,"some.name.temp")
+items <- fread("some.name.temp",colClasses="numeric")
+
+scat <- items %>% 
+  na.omit()
+
+
+scatterplot <- ggpairs(scat, columns = variables, 
+upper = list(continuous = wrap("cor")),
+title = "Scatter plot of items")
+print(scatterplot, progress=FALSE) 
+
+rm(scat)
+
+```
+
+
+*Confirmatory Factor Analysis*
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+factor <- 'lv =~ Q16_a + Q16_b + Q16_c + Q16_d + Q16_e + Q16_f + Q16_g + Q16_h + Q16_i + Q16_j + Q16_k'
+fit <- cfa(factor, data = items)
+summary(fit, fit.measures = TRUE)
+
+rm(factor)
+rm(fit)
+```
+
+
+*Exploratory Factor Analysis: Scree plot*
+```{r, echo = FALSE, warning = FALSE}
+set.seed(123)
+parallel = fa.parallel(items,
+ fm = 'ml',
+ fa = 'fa',
+ n.iter = 50,
+ main = "Scree plot of scale",
+ SMC = TRUE,
+ quant = .95)
+
+```
+
+*Exploratory Factor Analysis: Recommended Solution*
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+fa(items, fm = 'ml', nfactors = parallel$nfact)
+```
+
+*Exploratory Factor Analysis: Solutions where Eigen Values are >1*
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+fa(items,  fm = 'ml', nfactors = sum(parallel$fa.values > 1))
+
+rm(parallel)
+```
+
+##Conservation Of Resources Scale 
+###Loss & Threat of Loss
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+
+orig_items <- d %>% 
+  select(Q17_a_Threat:Q17_p_Threat)
+
+items <- d %>%
+  select(Q17_a:Q17_p)
+
+variables <- c("Q17_a", "Q17_b", "Q17_c", "Q17_d", "Q17_e", "Q17_f", "Q17_g", "Q17_h",  "Q17_i","Q17_j", "Q17_k", "Q17_l", "Q17_m", "Q17_n", "Q17_o", "Q17_p") 
+  
+
+ca <- my_reliability(items, itemal=TRUE, NA.Delete=TRUE)
+
+pipealpha <- paste(formatC(round(ca$alpha, digits=2), 2, format = "f"))
+
+temp <- cbind.data.frame(variables, ca$Nobs, ca$Mean, ca$SD, ca$Min, ca$Max, ca$R.With.Total, ca$Alpha.If.Deleted)
+colnames(temp) <- c("Item", "N", "Average", "Standard Deviation", "Minimum", "Maximum", "Correlation with total", "Cronbach's Alpha if item is deleted")
+rownames(temp) <- NULL
+  
+
+```
+
+
+*Cronbach's Alpha:* (`r pipealpha`)
+
+*List of Items*
+Threat and actual loss items were combined. A 0 represents no indication of threat or loss (denoted by choosing 0 to either threat or loss), 1-4 denotes threat level, and 5-8 denotes loss level.
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+list <- data.frame(var_label(orig_items)) %>% 
+  gather("Variable", "label") %>% 
+  mutate(Item = rm_between(label, "[", "]", extract=TRUE)) %>% 
+  select(-label)
+  
+ 
+kable(list, "html", align = 'l') %>% 
+   kable_styling(bootstrap_options = c("striped", "hover", "responsive"), full_width = T)
+
+```
+
+*Item Analysis*
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#set.alignment('left', row.names = 'right')
+#pander(temp)
+
+kable(temp, "html", align = 'c') %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "responsive"), full_width = F) 
+
+rm(ca)
+rm(temp)
+rm(pipealpha)
+rm(pct)
+
+```
+
+```{r, fig.height=10, fig.width=10, echo = FALSE}
+
+fwrite(items,"some.name.temp")
+items <- fread("some.name.temp",colClasses="numeric")
+
+scat <- items %>% 
+  na.omit()
+
+
+scatterplot <- ggpairs(scat, columns = variables, 
+upper = list(continuous = wrap("cor")),
+title = "Scatter plot of items")
+print(scatterplot, progress=FALSE) 
+
+rm(scat)
+
+```
+
+*Confirmatory Factor Analysis*
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+factor <- 'lv =~ Q17_a + Q17_b + Q17_c + Q17_d + Q17_e +Q17_f + Q17_g + Q17_h + Q17_i + Q17_j + Q17_k + Q17_l + Q17_m + Q17_n + Q17_o + Q17_p'
+fit <- cfa(factor, data = items)
+summary(fit, fit.measures = TRUE)
+
+rm(factor)
+rm(fit)
+```
+
+
+*Exploratory Factor Analysis: Scree plot*
+```{r, echo = FALSE, warning = FALSE}
+set.seed(123)
+parallel = fa.parallel(items,
+ fm = 'ml',
+ fa = 'fa',
+ n.iter = 50,
+ main = "Scree plot of scale",
+ SMC = TRUE,
+ quant = .95)
+
+```
+
+*Exploratory Factor Analysis: Recommended Solution*
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+fa(items, fm = 'ml', nfactors = parallel$nfact)
+```
+
+*Exploratory Factor Analysis: Solutions where Eigen Values are >1*
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+fa(items,  fm = 'ml', nfactors = sum(parallel$fa.values > 1))
+
+rm(parallel)
+```
+
+###Gain
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+test <- d %>% 
+  select(Q17_a_Threat:Q18_p)
+  
+  
+items <- d %>%
+  select(Q18_a:Q18_p)
+
+variables <- c("Q18_a", "Q18_b", "Q18_c", "Q18_d", "Q18_e", "Q18_f", "Q18_g", "Q18_h", "Q18_i",
+               "Q18_j", "Q18_k", "Q18_l", "Q18_m", "Q18_n", "Q18_o", "Q18_p") 
+  
+
+ca <- my_reliability(items, itemal=TRUE, NA.Delete=TRUE)
+
+pipealpha <- paste(formatC(round(ca$alpha, digits=2), 2, format = "f"))
+
+temp <- cbind.data.frame(variables, ca$Nobs, ca$Mean, ca$SD, ca$Min, ca$Max, ca$R.With.Total, ca$Alpha.If.Deleted)
+colnames(temp) <- c("Item", "N", "Average", "Standard Deviation", "Minimum", "Maximum", "Correlation with total", "Cronbach's Alpha if item is deleted")
+rownames(temp) <- NULL
+  
+
+
+```
+
+
+*Cronbach's Alpha:* (`r pipealpha`)
+
+*List of Items*
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+list <- data.frame(var_label(items)) %>% 
+  gather("Variable", "label") %>% 
+  mutate(Item = rm_between(label, "[", "]", extract=TRUE)) %>% 
+  select(-label)
+  
+ 
+kable(list, "html", align = 'l') %>% 
+   kable_styling(bootstrap_options = c("striped", "hover", "responsive"), full_width = T)
+
+```
+
+
+*Item Analysis*
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#set.alignment('left', row.names = 'right')
+#pander(temp)
+
+kable(temp, "html", align = 'c') %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "responsive"), full_width = F) 
+
+rm(ca)
+rm(temp)
+rm(pipealpha)
+rm(pct)
+
+```
+
+
+```{r, fig.height=10, fig.width=10, echo = FALSE}
+
+fwrite(items,"some.name.temp")
+items <- fread("some.name.temp",colClasses="numeric")
+
+scat <- items %>% 
+  na.omit()
+
+
+scatterplot <- ggpairs(scat, columns = variables, 
+upper = list(continuous = wrap("cor")),
+# lower = list(continuous=wrap("points", position="jitter")),
+title = "Scatter plot of items")
+print(scatterplot, progress=FALSE) 
+
+rm(scat)
+
+```
+
+
+*Confirmatory Factor Analysis*
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+factor <- 'lv =~ Q18_a + Q18_b + Q18_c + Q18_d + Q18_e +Q18_f + Q18_g + Q18_h + Q18_i + Q18_j + Q18_k + Q18_l + Q18_m + Q18_n + Q18_o + Q18_p'
+fit <- cfa(factor, data = items)
+summary(fit, fit.measures = TRUE)
+
+rm(factor)
+rm(fit)
+```
+
+
+
+*Exploratory Factor Analysis: Scree plot*
+```{r, echo = FALSE, warning = FALSE}
+set.seed(123)
+parallel = fa.parallel(items,
+ fm = 'ml',
+ fa = 'fa',
+ n.iter = 50,
+ main = "Scree plot of scale",
+ SMC = TRUE,
+ quant = .95)
+
+```
+
+*Exploratory Factor Analysis: Recommended Solution*
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+fa(items, fm = 'ml', nfactors = parallel$nfact)
+```
+
+*Exploratory Factor Analysis: Solutions where Eigen Values are >1*
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+fa(items,  fm = 'ml', nfactors = sum(parallel$fa.values > 1))
+
+rm(parallel)
+```
+
+
+```{r, eval = TRUE}
+
+#set up prelim full factorial
+#get treatment combos
+
+final <- d %>% 
+  mutate(sip = Q2 - 1,
+         hazard.f = ifelse(Treatments < 9, "chemical", "radiological"),
+         cause.f = ifelse (Treatments  %in% c(1:4,9:12), "accident", "terrorist"),
+         location.f = ifelse(Treatments %in% c(1:2, 5:6, 9:10, 13:14), "alone", "household"),
+         commun.f = ifelse(Treatments %in% c(1,3,5,7,9,11,13,15), "available", "unavailable"))
+
+f1 <- final %>% group_by(hazard.f) %>% summarize(proportion = mean(sip, na.rm = TRUE))
+f1
+f2 <- final %>% group_by(cause.f) %>% summarize(proportion = mean(sip, na.rm = TRUE))
+f2
+f3 <- final %>% group_by(location.f) %>% summarize(proportion = mean(sip, na.rm = TRUE))
+f3
+f4 <- final %>% group_by(commun.f) %>% summarize(proportion = mean(sip, na.rm = TRUE))
+f4
+
+all <- final %>% group_by(Treatments) %>% summarize(proportion = mean(sip, na.rm = TRUE))
+all
+
+
+
+
+         
+
+```
+
+
+#Factorial Design
+
+##Schematic model being assessed
+![](https://raw.githubusercontent.com/ndyetz/Shelter_In_Place/master/Schematic_model.PNG)
+
+##2x2x2x2 Factorial Design
+
+*Outcome = Decision to Shelter-In-Place* (0 = no, 1 = yes)
+
+![](https://raw.githubusercontent.com/ndyetz/Shelter_In_Place/master/factorial_design.PNG)
+
+
+
+
+
+
