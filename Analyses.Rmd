@@ -2,13 +2,13 @@
 title: "R Notebook for SIP Experimental Data"
 subtitle: Created by KL Henry on 2/4/18
 output:
+  html_notebook:
+    theme: yeti
+  pdf_document:
+    toc: yes
   html_document:
     df_print: paged
     toc: yes
-  pdf_document:
-    toc: yes
-  html_notebook:
-    theme: yeti
 ---
 
 ```{r, echo=FALSE, warning=FALSE, message=FALSE}
@@ -76,6 +76,9 @@ library(lavaan)
 library(GPArotation)
 library(GGally)
 library(data.table)
+library(afex)
+library(olsrr)
+library(devtools)
 
 ```
 
@@ -1481,10 +1484,10 @@ rm(parallel)
 
 final <- d %>% 
   mutate(sip = Q2 - 1,
-         hazard.f = ifelse(Treatments < 9, "chemical", "radiological"),
-         cause.f = ifelse (Treatments  %in% c(1:4,9:12), "accident", "terrorist"),
+         hazard.f   = ifelse(Treatments < 9, "chemical", "radiological"),
+         cause.f    = ifelse(Treatments  %in% c(1:4,9:12), "accident", "terrorist"),
          location.f = ifelse(Treatments %in% c(1:2, 5:6, 9:10, 13:14), "alone", "household"),
-         commun.f = ifelse(Treatments %in% c(1,3,5,7,9,11,13,15), "available", "unavailable"))
+         commun.f   = ifelse(Treatments %in% c(1,3,5,7,9,11,13,15), "available", "unavailable"))
 
 f1 <- final %>% group_by(hazard.f) %>% summarize(proportion = mean(sip, na.rm = TRUE))
 f1
@@ -1498,10 +1501,38 @@ f4
 all <- final %>% group_by(Treatments) %>% summarize(proportion = mean(sip, na.rm = TRUE))
 all
 
-
-
+#Get proportions of all confditions as well. 
 
          
+
+```
+
+# Initial SEM
+```{r}
+for_sem <- final %>% 
+  mutate(exper = RQ10_b,
+         cogrisk1 = Q12_a, cogrisk2 = Q12_b, cogrisk3 = Q12_c,
+         affrisk1 = Q13_a, affrisk2 = Q13_f, affrisk3 = Q13_g,
+         knowledg = RQ10_a,
+         effic1 = Q11_a, effic2 = Q9_e,
+         loc1 = Q14_a, loc2 = Q14_b, loc3 = Q14_d, loc4 = Q14_e, loc5 = Q14_f,
+         react1 = Q16_a, react2 = Q16_b, react3 = Q16_g, react4 = Q16_j,
+         conf1 = Q15_a, conf2 = Q15_c, conf3 = Q15_e) %>% 
+  rowwise() %>% 
+  mutate(corgain = mean(c(Q18_a, Q18_b, Q18_c, Q18_d, Q18_e, Q18_f, Q18_g, Q18_h, Q18_i, Q18_j, Q18_k, Q18_l, Q18_m, Q18_n, Q18_o, Q18_p)), na.rm=TRUE) %>% 
+  mutate(corloss = mean(c(Q17_a, Q17_b, Q17_c, Q17_d, Q17_e, Q17_f, Q17_g, Q17_h, Q17_i, Q17_j, Q17_k, Q17_l, Q17_m, Q17_n, Q17_o, Q17_p)), na.rm=TRUE) %>% 
+  ungroup() %>% 
+  select(exper, cogrisk1:cogrisk3, affrisk1:affrisk3, knowledg, effic1:effic2, loc1:loc5, react1:react4, conf1:conf3,
+          sip, corgain, corloss)
+
+
+  
+ 
+library(MplusAutomation)
+
+prepareMplusData(for_sem, "mplusdata.dat")
+
+
 
 ```
 
@@ -1516,6 +1547,44 @@ all
 *Outcome = Decision to Shelter-In-Place* (0 = no, 1 = yes)
 
 ![](https://raw.githubusercontent.com/ndyetz/Shelter_In_Place/master/factorial_design.PNG)
+
+**Model to be tested**
+
+$Logit(SIP)=\beta_o +\beta X_CAAA+\beta_CAAU+\beta_CAHA+\beta_CAHU+\beta X_CTAA+beta_CTAU+\beta_CTHA+\beta_CTHU$
+$+ \beta X_RAAA+\beta_RAAU+\beta_RAHA+\beta_RAHU+\beta X_RTAA+\beta_RTAU+\beta_RTHA+\beta_RTHU+\epsilon$
+
+#Factorial Analysis
+##Logistic Regression Approach
+
+
+#All interactions Assessed
+```{r}
+model1 <- glm(sip ~ hazard.f*cause.f*location.f*commun.f, data = final, family=binomial("logit"))
+summary(model1)
+```
+
+
+#Compare means from logistic regression model (through emmeans)
+```{r}
+library(car)
+library(emmeans)
+
+compare <- emmeans(model1, pairwise ~ hazard.f:cause.f:location.f:commun.f, type = "response")
+compare # <- confirm the "prob" matches each proportion from our treatment conditions.
+
+```
+
+##Planned comparisons
+```{r}
+#Just looking at hazard.f # "|" allows you to compare the categories. if term doesn't appear then it averages it. The ":" will assess the interaction between the two variables. 
+emmeans(model1, pairwise ~ hazard.f|cause.f|location.f|commun.f, type = "response")
+
+#Don't simplify the logit model model, you can make comparison below
+
+emmeans(model1, pairwise ~ hazard.f, type = "response")
+emmeans(model1, pairwise ~ hazard.f|cause.f, type = "response")
+```
+
 
 
 
